@@ -4,6 +4,8 @@ using AsyncJobProcessingApi.Application.Interfaces;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.DependencyInjection;
+using Polly;
+using Polly.Retry;
 
 namespace AsyncJobProcessingApi.Infrastructure.Messaging;
 
@@ -14,6 +16,7 @@ public class ServiceBusConsumer : IMessageConsumer, IAsyncDisposable
     private readonly ServiceBusReceiver _receiver;
     private readonly IServiceProvider _serviceProvider;
     private readonly int _maxConcurrentJobs;
+    private readonly AsyncRetryPolicy _retryPolicy;
 
     public ServiceBusConsumer(
         IConfiguration configuration, 
@@ -40,6 +43,19 @@ public class ServiceBusConsumer : IMessageConsumer, IAsyncDisposable
         };
         
         _receiver = _client.CreateReceiver(queueName, receiverOptions);
+
+        var random = new Random();
+        _retryPolicy = Policy
+            .Handle<Exception>(ex => ex is not JsonException)
+            .WaitAndRetryAsync(3, retryAttempt => 
+                TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)) 
+                + TimeSpan.FromMilliseconds(random.Next(0, 1000)),
+                onRetry: (exception, timeSpan, retryCount, context) => 
+                {
+                    var messageId = context.ContainsKey("MessageId") ? context["MessageId"] : "Unknown";
+                    _logger.LogWarning(exception, "Retry {RetryAttempt} after {Delay}ms for MessageId {MessageId} due to {ExceptionMessage}", 
+                        retryCount, timeSpan.TotalMilliseconds, messageId, exception.Message);
+                });
     }
 
     public async Task StartConsumingAsync(CancellationToken cancellationToken)
@@ -50,28 +66,24 @@ public class ServiceBusConsumer : IMessageConsumer, IAsyncDisposable
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                var message = await _receiver.ReceiveMessageAsync(TimeSpan.FromSeconds(5), cancellationToken);
+                await semaphore.WaitAsync(cancellationToken);
                 
-                if (message != null)
+                int availableSlots = semaphore.CurrentCount + 1;
+                
+                var messages = await _receiver.ReceiveMessagesAsync(availableSlots, TimeSpan.FromSeconds(5), cancellationToken);
+                
+                semaphore.Release();
+
+                if (messages == null || messages.Count == 0)
+                {
+                    continue;
+                }
+
+                foreach (var message in messages)
                 {
                     await semaphore.WaitAsync(cancellationToken);
 
-                    _ = Task.Run(async () =>
-                    {
-                        try
-                        {
-                            await ProcessMessageAsync(message, cancellationToken);
-                        }
-                        catch (Exception ex)
-                        {
-                            _logger.LogError(ex, "Failed to process message {MessageId}", message.MessageId);
-                            await _receiver.AbandonMessageAsync(message, cancellationToken: cancellationToken);
-                        }
-                        finally
-                        {
-                            semaphore.Release();
-                        }
-                    }, cancellationToken);
+                    _ = ProcessMessageSafelyAsync(message, semaphore, cancellationToken);
                 }
             }
         }
@@ -81,27 +93,49 @@ public class ServiceBusConsumer : IMessageConsumer, IAsyncDisposable
         }
     }
 
-    private async Task ProcessMessageAsync(ServiceBusReceivedMessage message, CancellationToken cancellationToken)
+    private async Task ProcessMessageSafelyAsync(ServiceBusReceivedMessage message, SemaphoreSlim semaphore, CancellationToken cancellationToken)
     {
-        using var scope = _serviceProvider.CreateScope();
-        var jobProcessor = scope.ServiceProvider.GetRequiredService<IJobProcessor>();
-        
-        var messageBody = message.Body.ToString();
-        using var document = JsonDocument.Parse(messageBody);
-        var jobId = document.RootElement.GetProperty("JobId").GetString();
-
-        if (string.IsNullOrEmpty(jobId))
+        try
         {
-            _logger.LogWarning("Invalid message format captured. MessageId: {MessageId}", message.MessageId);
-            await _receiver.DeadLetterMessageAsync(message, "InvalidFormat", "The message did not contain a valid JobId.");
-            return;
+            using var scope = _serviceProvider.CreateScope();
+            var jobProcessor = scope.ServiceProvider.GetRequiredService<IJobProcessor>();
+
+            string jobId;
+            try
+            {
+                var messageBody = message.Body.ToString();
+                using var document = JsonDocument.Parse(messageBody);
+                jobId = document.RootElement.GetProperty("JobId").GetString() ?? throw new JsonException("JobId is null");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Invalid message format captured. MessageId: {MessageId}", message.MessageId);
+                await _receiver.DeadLetterMessageAsync(message, "InvalidFormat", "The message did not contain a valid JobId.", cancellationToken);
+                return;
+            }
+
+            _logger.LogInformation("Invoking business UseCase for Job: {JobId}. MessageId: {MessageId}. Delivery Count: {Count}", 
+                jobId, message.MessageId, message.DeliveryCount);
+
+            var context = new Context { { "MessageId", message.MessageId } };
+            
+            await _retryPolicy.ExecuteAsync(async (ctx, ct) => 
+            {
+                await jobProcessor.ProcessJobAsync(jobId, ct);
+            }, context, cancellationToken);
+
+            await _receiver.CompleteMessageAsync(message, cancellationToken);
+            _logger.LogInformation("Successfully processed and completed Job: {JobId}. MessageId: {MessageId}.", jobId, message.MessageId);
         }
-
-        _logger.LogInformation("Invoking business UseCase for Job: {JobId}. Delivery Count: {Count}", jobId, message.DeliveryCount);
-
-        await jobProcessor.ProcessJobAsync(jobId, cancellationToken);
-
-        await _receiver.CompleteMessageAsync(message, cancellationToken);
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to process message {MessageId} after retries. Abandoning to Service Bus.", message.MessageId);
+            await _receiver.AbandonMessageAsync(message, cancellationToken: cancellationToken);
+        }
+        finally
+        {
+            semaphore.Release();
+        }
     }
 
     public async Task StopConsumingAsync(CancellationToken cancellationToken)

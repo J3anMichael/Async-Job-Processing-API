@@ -23,9 +23,14 @@ This API solves that by offloading work to the Cloud via Asynchronous Messaging:
 * `Workers/`: The minimalist BackgroundService host activating the consumer infinitely.
 
 ## ⚙️ Features
+
+- **Advanced Throughput (Dynamic Batching)**: Instead of one-by-one polling, the consumer calculates available processing slots in real-time (`semaphore.CurrentCount + 1`) to fetch messages in optimized batches from Azure.
+- **Enterprise Resilience (Polly)**: Integrates **Polly** policies for business logic execution, using **Exponential Backoff + Jitter** to handle transient failures gracefully without overloading downstream resources.
 - **Parallel Processing**: Supports fetching and processing hundreds of jobs concurrently (configurable via `MaxConcurrentJobs`).
 - **Resilience**: Implements _PeekLock_ receive-mode. If the worker crashes mid-task, the message is automatically unlocked by Azure for retry.
-- **Poison Message Handling**: Automatically relocates malformed JSON payloads to a _Dead-Letter Queue_ avoiding system hang.
+- **Observability**: Integrated with **Serilog** for structured logging, allowing audit trails in both Console and daily rolling Files (`logs/`).
+- **Poison Message Handling**: Automatically relocates malformed payloads (JSON errors) to a _Dead-Letter Queue_ to avoid blocking the pipeline.
+- **Clean Code & SRP**: The codebase follows strict Clean Architecture and SRP. It is "self-documenting" with zero comments, relying on expressive naming and clear structure.
 - **Dependency Injection**: Strongly typed and scoped lifecycles across the application.
 
 ---
