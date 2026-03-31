@@ -3,8 +3,12 @@ using AsyncJobProcessingApi.Application.UseCases;
 using AsyncJobProcessingApi.Infrastructure;
 using AsyncJobProcessingApi.Infrastructure.Messaging;
 using AsyncJobProcessingApi.Workers;
+using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Host.UseSerilog((context, loggerConfiguration) => loggerConfiguration
+    .ReadFrom.Configuration(context.Configuration));
 
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();

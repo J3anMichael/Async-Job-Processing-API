@@ -484,3 +484,6 @@ $RECYCLE.BIN/
 # Ignore local settings with secrets
 appsettings.json
 appsettings.Development.json
+
+# Ignore local Serilog output files
+logs/
