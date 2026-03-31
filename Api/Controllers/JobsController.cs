@@ -25,20 +25,17 @@ public class JobsController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> CreateJob([FromBody] CreateJobRequest request, CancellationToken cancellationToken)
     {
-        // 1. Create job in database (Pending status)
         var job = _jobRepository.CreateJob(request.Payload);
         
         _logger.LogInformation("Created job {JobId} with Pending status.", job.Id);
 
         try
         {
-            // 2. Publish to service bus
             await _messagePublisher.PublishJobAsync(job.Id, request.Payload, cancellationToken);
             return AcceptedAtAction(nameof(GetJob), new { jobId = job.Id }, new { JobId = job.Id, Status = job.Status.ToString() });
         }
         catch (Exception ex)
         {
-            // If publishing fails, we might want to mark the job as Failed or let a retry mechanism handle it.
             _logger.LogError(ex, "Failed to publish job {JobId}. Marking as failed.", job.Id);
             _jobRepository.UpdateJobStatus(job.Id, JobStatus.Failed, "Failed to enqueue job.");
             

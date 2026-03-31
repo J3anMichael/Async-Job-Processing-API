@@ -24,12 +24,12 @@ public class ServiceBusConsumer : IMessageConsumer, IAsyncDisposable
         _serviceProvider = serviceProvider;
 
         var connectionString = configuration["ServiceBus:ConnectionString"]
-            ?? throw new InvalidOperationException("A configuração 'ConnectionString' é obrigatória no appsettings.json!");
+            ?? throw new InvalidOperationException("Configuration 'ConnectionString' is required in appsettings.json!");
         var queueName = configuration["ServiceBus:QueueName"]
-            ?? throw new InvalidOperationException("A configuração 'QueueName' é obrigatória no appsettings.json!");
+            ?? throw new InvalidOperationException("Configuration 'QueueName' is required in appsettings.json!");
 
         _maxConcurrentJobs = configuration.GetValue<int?>("ServiceBus:MaxConcurrentJobs")
-            ?? throw new InvalidOperationException("A configuração 'MaxConcurrentJobs' é obrigatória no appsettings.json!");
+            ?? throw new InvalidOperationException("Configuration 'MaxConcurrentJobs' is required in appsettings.json!");
 
         _client = new ServiceBusClient(connectionString);
         
@@ -64,7 +64,7 @@ public class ServiceBusConsumer : IMessageConsumer, IAsyncDisposable
                         }
                         catch (Exception ex)
                         {
-                            _logger.LogError(ex, "Ocorreu uma falha ao processar a mensagem {MessageId}", message.MessageId);
+                            _logger.LogError(ex, "Failed to process message {MessageId}", message.MessageId);
                             await _receiver.AbandonMessageAsync(message, cancellationToken: cancellationToken);
                         }
                         finally
@@ -77,7 +77,7 @@ public class ServiceBusConsumer : IMessageConsumer, IAsyncDisposable
         }
         catch (OperationCanceledException)
         {
-            _logger.LogInformation("Conexão do Worker com o Service Bus foi cancelada.");
+            _logger.LogInformation("Worker connection to Service Bus was cancelled.");
         }
     }
 
@@ -92,14 +92,13 @@ public class ServiceBusConsumer : IMessageConsumer, IAsyncDisposable
 
         if (string.IsNullOrEmpty(jobId))
         {
-            _logger.LogWarning("Mensagem com formato inválido captada. MessageId: {MessageId}", message.MessageId);
+            _logger.LogWarning("Invalid message format captured. MessageId: {MessageId}", message.MessageId);
             await _receiver.DeadLetterMessageAsync(message, "InvalidFormat", "The message did not contain a valid JobId.");
             return;
         }
 
-        _logger.LogInformation("Deixando a camada de Infra e mandando para o UseCase de negócio para a Job: {JobId}. Delivery Count: {Count}", jobId, message.DeliveryCount);
+        _logger.LogInformation("Invoking business UseCase for Job: {JobId}. Delivery Count: {Count}", jobId, message.DeliveryCount);
 
-        // Chama o processador de regra de negócio, separadamente!
         await jobProcessor.ProcessJobAsync(jobId, cancellationToken);
 
         await _receiver.CompleteMessageAsync(message, cancellationToken);

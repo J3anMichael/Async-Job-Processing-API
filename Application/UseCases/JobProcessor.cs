@@ -19,16 +19,13 @@ public class JobProcessor : IJobProcessor
     {
         _logger.LogInformation("Starting business logic processing for job {JobId}", jobId);
 
-        // Mudar status para 'Processing'
         _jobRepository.UpdateJobStatus(jobId, JobStatus.Processing);
 
-        // Simular trabalho pesado ou chamada de API externa
         var simulationDelay = new Random().Next(2000, 5000);
         await Task.Delay(simulationDelay, cancellationToken);
         
         var result = $"Processed successfully in {simulationDelay}ms";
 
-        // Mudar status para 'Completed' no banco simulado
         _jobRepository.UpdateJobStatus(jobId, JobStatus.Completed, result);
         
         _logger.LogInformation("Completed business logic for job {JobId}. Result: {Result}", jobId, result);

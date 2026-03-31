@@ -17,9 +17,9 @@ public class ServiceBusPublisher : IMessagePublisher, IAsyncDisposable
         _logger = logger;
         
         var connectionString = configuration["ServiceBus:ConnectionString"]
-            ?? throw new InvalidOperationException("A configuração 'ConnectionString' é obrigatória no appsettings.json!");
+            ?? throw new InvalidOperationException("Configuration 'ConnectionString' is required in appsettings.json!");
         var queueName = configuration["ServiceBus:QueueName"]
-            ?? throw new InvalidOperationException("A configuração 'QueueName' é obrigatória no appsettings.json!");
+            ?? throw new InvalidOperationException("Configuration 'QueueName' is required in appsettings.json!");
 
         _client = new ServiceBusClient(connectionString);
         _sender = _client.CreateSender(queueName);
